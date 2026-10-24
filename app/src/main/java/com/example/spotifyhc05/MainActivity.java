@@ -59,7 +59,11 @@ public class MainActivity extends Activity {
         } else loadPairedDevices();
         IntentFilter filter = new IntentFilter(ACTION_TRACK_UPDATE);
         filter.addAction("com.spotify.music.metadatachanged");
-        registerReceiver(trackUpdates, filter);
+        if (Build.VERSION.SDK_INT >= 33) {
+    registerReceiver(trackUpdates, filter, Context.RECEIVER_EXPORTED);
+} else {
+    registerReceiver(trackUpdates, filter);
+}
         if (getIntent() != null && ACTION_TRACK_UPDATE.equals(getIntent().getAction())) handleTrackIntent(getIntent());
     }
 
@@ -112,7 +116,15 @@ public class MainActivity extends Activity {
                 BluetoothSocket candidate = device.createRfcommSocketToServiceRecord(SPP_UUID);
                 candidate.connect();
                 OutputStream stream = candidate.getOutputStream();
-                runOnUiThread(() -> { socket = candidate; output = stream; status.setText("Connected to HC-05. Waiting for Spotify…"); Toast.makeText(this, "Bluetooth serial connected", Toast.LENGTH_SHORT).show(); });
+                runOnUiThread(() -> {
+    socket = candidate;
+    output = stream;
+
+    status.setText("Connected to HC-05.");
+    Toast.makeText(this, "Bluetooth serial connected", Toast.LENGTH_SHORT).show();
+
+    sendLatestTrack();
+});
             } catch (Exception e) {
                 runOnUiThread(() -> status.setText("Connection failed: " + e.getMessage() + ". Close Serial Bluetooth Terminal first and retry."));
             }
@@ -127,23 +139,57 @@ public class MainActivity extends Activity {
     private void handleTrackIntent(Intent intent) { showAndSend(intent.getStringExtra("track"), intent.getStringExtra("artist")); }
 
     private void showAndSend(String track, String artist) {
-        if (track == null) track = ""; if (artist == null) artist = "";
-        if (track.trim().isEmpty()) return;
-        String line = artist.trim().isEmpty() ? track.trim() : track.trim() + " - " + artist.trim();
-        runOnUiThread(() -> currentTrack.setText("Now playing:\n" + line));
-        if (line.equals(lastSent)) return;
-        lastSent = line;
-        final String payload = line + "\n";
-        new Thread(() -> {
-            try {
-                OutputStream stream = output;
-                if (stream != null && socket != null && socket.isConnected()) {
-                    stream.write(payload.getBytes(StandardCharsets.UTF_8)); stream.flush();
-                    runOnUiThread(() -> status.setText("Connected — sent latest song to Arduino."));
-                } else runOnUiThread(() -> status.setText("Song detected; connect to HC-05 to send it."));
-            } catch (Exception e) { runOnUiThread(() -> status.setText("Send failed. Reconnect to HC-05.")); }
-        }).start();
-    }
+    if (track == null) track = "";
+    if (artist == null) artist = "";
+
+    if (track.trim().isEmpty()) return;
+
+    String line = artist.trim().isEmpty()
+            ? track.trim()
+            : track.trim() + " - " + artist.trim();
+
+    runOnUiThread(() -> currentTrack.setText("Now playing:\n" + line));
+
+    // Remember the latest song, even if Bluetooth is disconnected.
+    lastSent = line;
+
+    sendLatestTrack();
+}
+
+private void sendLatestTrack() {
+    final String payload = lastSent;
+
+    if (payload == null || payload.isEmpty()) return;
+
+    new Thread(() -> {
+        try {
+            BluetoothSocket currentSocket = socket;
+            OutputStream currentOutput = output;
+
+            if (currentSocket != null
+                    && currentOutput != null
+                    && currentSocket.isConnected()) {
+
+                currentOutput.write(
+                        (payload + "\n").getBytes(StandardCharsets.UTF_8)
+                );
+                currentOutput.flush();
+
+                runOnUiThread(() ->
+                        status.setText("Connected — sent latest song to Arduino.")
+                );
+            } else {
+                runOnUiThread(() ->
+                        status.setText("Song detected; connect to HC-05 to send it.")
+                );
+            }
+        } catch (Exception e) {
+            runOnUiThread(() ->
+                    status.setText("Send failed. Reconnect to HC-05.")
+            );
+        }
+    }).start();
+}
 
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleTrackIntent(intent); }
     @Override protected void onDestroy() {
